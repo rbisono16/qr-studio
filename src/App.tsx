@@ -26,6 +26,20 @@ type FormState = {
   vcardWebsite: string;
 };
 
+type HistoryEntry = {
+  id: string;
+  label: string;
+  qrType: QrType;
+  createdAt: string;
+  qrValue: string;
+  form: FormState;
+  size: number;
+  margin: number;
+  darkColor: string;
+  lightColor: string;
+  errorCorrectionLevel: ErrorLevel;
+};
+
 type StringFormKey = {
   [K in keyof FormState]: FormState[K] extends string ? K : never;
 }[keyof FormState];
@@ -39,6 +53,37 @@ const qrTypeOptions: Array<{ id: QrType; title: string; description: string }> =
   { id: 'wifi', title: 'Wi-Fi', description: 'Conecta a una red rapidamente.' },
   { id: 'vcard', title: 'vCard', description: 'Comparte un contacto completo.' },
 ];
+
+const accessibilityTemplates = [
+  {
+    id: 'classic',
+    name: 'Clasico',
+    description: 'Maximo contraste para lectura general.',
+    dark: '#111827',
+    light: '#FFFFFF',
+  },
+  {
+    id: 'soft-paper',
+    name: 'Papel suave',
+    description: 'Contraste alto con un fondo menos duro.',
+    dark: '#0F172A',
+    light: '#F8FAFC',
+  },
+  {
+    id: 'forest',
+    name: 'Bosque',
+    description: 'Verde profundo, todavia muy legible.',
+    dark: '#14532D',
+    light: '#F0FDF4',
+  },
+  {
+    id: 'ocean',
+    name: 'Oceano',
+    description: 'Azul intenso con excelente claridad.',
+    dark: '#1E3A8A',
+    light: '#EFF6FF',
+  },
+] as const;
 
 const fieldLimits: Record<StringFormKey, number> = {
   url: 1024,
@@ -62,6 +107,9 @@ const fieldLimits: Record<StringFormKey, number> = {
 };
 
 const multilineFields: StringFormKey[] = ['text', 'emailBody', 'smsMessage'];
+const HISTORY_STORAGE_KEY = 'qr-studio-history';
+const HISTORY_ENABLED_KEY = 'qr-studio-history-enabled';
+const HISTORY_LIMIT = 6;
 
 const initialFormState: FormState = {
   url: '',
@@ -136,6 +184,71 @@ function normalizeHexColor(value: string) {
 
   const withHash = trimmed.startsWith('#') ? trimmed : `#${trimmed}`;
   return withHash.slice(0, 7).toUpperCase();
+}
+
+function hexToRgb(value: string) {
+  const normalized = value.replace('#', '');
+  return {
+    r: parseInt(normalized.slice(0, 2), 16),
+    g: parseInt(normalized.slice(2, 4), 16),
+    b: parseInt(normalized.slice(4, 6), 16),
+  };
+}
+
+function channelToLinear(value: number) {
+  const normalized = value / 255;
+  return normalized <= 0.03928
+    ? normalized / 12.92
+    : ((normalized + 0.055) / 1.055) ** 2.4;
+}
+
+function getRelativeLuminance(value: string) {
+  const { r, g, b } = hexToRgb(value);
+  return (
+    0.2126 * channelToLinear(r) +
+    0.7152 * channelToLinear(g) +
+    0.0722 * channelToLinear(b)
+  );
+}
+
+function getContrastRatio(dark: string, light: string) {
+  const luminanceA = getRelativeLuminance(dark);
+  const luminanceB = getRelativeLuminance(light);
+  const lighter = Math.max(luminanceA, luminanceB);
+  const darker = Math.min(luminanceA, luminanceB);
+  return (lighter + 0.05) / (darker + 0.05);
+}
+
+function getAccessibilityLevel(contrastRatio: number) {
+  if (contrastRatio >= 7) {
+    return {
+      label: 'Excelente',
+      tone: 'excellent',
+      helper: 'Contraste muy alto. Ideal para la mayoria de usos y entornos.',
+    };
+  }
+
+  if (contrastRatio >= 4.5) {
+    return {
+      label: 'Muy buena',
+      tone: 'good',
+      helper: 'Lectura solida y recomendable para pantalla e impresion comun.',
+    };
+  }
+
+  if (contrastRatio >= 3) {
+    return {
+      label: 'Aceptable',
+      tone: 'fair',
+      helper: 'Puede funcionar, pero conviene probar el escaneo en distintos dispositivos.',
+    };
+  }
+
+  return {
+    label: 'Baja',
+    tone: 'low',
+    helper: 'El contraste es flojo. Mejor subir la diferencia entre QR y fondo.',
+  };
 }
 
 function buildQrValue(type: QrType, form: FormState) {
@@ -278,6 +391,38 @@ function downloadFile(url: string, fileName: string) {
   link.click();
 }
 
+function getHistoryLabel(type: QrType, form: FormState) {
+  switch (type) {
+    case 'url':
+      return form.url.trim() || 'URL';
+    case 'text':
+      return form.text.trim().slice(0, 42) || 'Texto';
+    case 'email':
+      return form.email.trim() || 'Email';
+    case 'phone':
+      return form.phone.trim() || 'Telefono';
+    case 'sms':
+      return form.smsPhone.trim() || 'SMS';
+    case 'wifi':
+      return form.wifiSsid.trim() || 'Wi-Fi';
+    case 'vcard':
+      return `${form.vcardFirstName.trim()} ${form.vcardLastName.trim()}`.trim() || 'vCard';
+  }
+}
+
+function formatHistoryTimestamp(value: string) {
+  try {
+    return new Intl.DateTimeFormat('es', {
+      month: 'short',
+      day: 'numeric',
+      hour: 'numeric',
+      minute: '2-digit',
+    }).format(new Date(value));
+  } catch {
+    return value;
+  }
+}
+
 function App() {
   const [qrType, setQrType] = useState<QrType>('url');
   const [form, setForm] = useState<FormState>(initialFormState);
@@ -293,10 +438,51 @@ function App() {
   const [pngUrl, setPngUrl] = useState('');
   const [isGenerating, setIsGenerating] = useState(true);
   const [errorMessage, setErrorMessage] = useState('');
+  const [showAdvanced, setShowAdvanced] = useState(false);
+  const [historyEnabled, setHistoryEnabled] = useState(false);
+  const [historyEntries, setHistoryEntries] = useState<HistoryEntry[]>([]);
+  const [hasHydratedStorage, setHasHydratedStorage] = useState(false);
 
   const qrValue = buildQrValue(qrType, form);
   const validationMessage = getValidationMessage(qrType, form);
   const hasPreview = Boolean(svgMarkup) && !errorMessage;
+  const contrastRatio = getContrastRatio(darkColor, lightColor);
+  const accessibilityLevel = getAccessibilityLevel(contrastRatio);
+
+  useEffect(() => {
+    try {
+      const storedEnabled = window.localStorage.getItem(HISTORY_ENABLED_KEY);
+      const storedHistory = window.localStorage.getItem(HISTORY_STORAGE_KEY);
+
+      if (storedEnabled === 'true') {
+        setHistoryEnabled(true);
+      }
+
+      if (storedHistory) {
+        setHistoryEntries(JSON.parse(storedHistory) as HistoryEntry[]);
+      }
+    } catch {
+      setHistoryEntries([]);
+    } finally {
+      setHasHydratedStorage(true);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!hasHydratedStorage) {
+      return;
+    }
+
+    try {
+      window.localStorage.setItem(HISTORY_ENABLED_KEY, String(historyEnabled));
+      if (!historyEnabled) {
+        window.localStorage.removeItem(HISTORY_STORAGE_KEY);
+        setHistoryEntries([]);
+      }
+    } catch {
+      // Ignore storage issues.
+    }
+  }, [hasHydratedStorage, historyEnabled]);
 
   useEffect(() => {
     let isActive = true;
@@ -376,6 +562,66 @@ function App() {
     validationMessage,
   ]);
 
+  useEffect(() => {
+    if (!hasHydratedStorage || !historyEnabled || !hasPreview) {
+      return;
+    }
+
+    const nextEntry: HistoryEntry = {
+      id: `${qrType}-${Date.now()}`,
+      label: getHistoryLabel(qrType, form),
+      qrType,
+      createdAt: new Date().toISOString(),
+      qrValue,
+      form,
+      size,
+      margin,
+      darkColor,
+      lightColor,
+      errorCorrectionLevel,
+    };
+
+    setHistoryEntries((current) => {
+      const alreadyFirst =
+        current[0]?.qrValue === nextEntry.qrValue &&
+        current[0]?.qrType === nextEntry.qrType;
+
+      if (alreadyFirst) {
+        return current;
+      }
+
+      const deduped = current.filter(
+        (entry) =>
+          !(
+            entry.qrValue === nextEntry.qrValue &&
+            entry.qrType === nextEntry.qrType
+          ),
+      );
+
+      const updated = [nextEntry, ...deduped].slice(0, HISTORY_LIMIT);
+
+      try {
+        window.localStorage.setItem(HISTORY_STORAGE_KEY, JSON.stringify(updated));
+      } catch {
+        // Ignore storage issues.
+      }
+
+      return updated;
+    });
+  }, [
+    darkColor,
+    errorCorrectionLevel,
+    form,
+    hasHydratedStorage,
+    hasPreview,
+    historyEnabled,
+    lightColor,
+    margin,
+    qrType,
+    qrValue,
+    size,
+  ]);
+
   function updateForm<K extends keyof FormState>(key: K, nextValue: FormState[K]) {
     setForm((current) => ({
       ...current,
@@ -445,6 +691,43 @@ function App() {
     setLightHexInput(normalized);
   }
 
+  function applyAccessibilityTemplate(dark: string, light: string) {
+    syncColorFromPicker('dark', dark);
+    syncColorFromPicker('light', light);
+  }
+
+  function handleUrlBlur() {
+    const currentUrl = form.url.trim();
+
+    if (!currentUrl || currentUrl.startsWith('http://') || currentUrl.startsWith('https://')) {
+      return;
+    }
+
+    updateForm('url', `https://${currentUrl}`);
+  }
+
+  function applyHistoryEntry(entry: HistoryEntry) {
+    setQrType(entry.qrType);
+    setForm(entry.form);
+    setSize(entry.size);
+    setMargin(entry.margin);
+    setDarkColor(entry.darkColor);
+    setLightColor(entry.lightColor);
+    setDarkHexInput(entry.darkColor.toUpperCase());
+    setLightHexInput(entry.lightColor.toUpperCase());
+    setErrorCorrectionLevel(entry.errorCorrectionLevel);
+    setShowAdvanced(true);
+  }
+
+  function clearHistory() {
+    setHistoryEntries([]);
+    try {
+      window.localStorage.removeItem(HISTORY_STORAGE_KEY);
+    } catch {
+      // Ignore storage issues.
+    }
+  }
+
   function renderForm() {
     switch (qrType) {
       case 'url':
@@ -457,9 +740,14 @@ function App() {
               maxLength={fieldLimits.url}
               value={form.url}
               onChange={(event) => updateForm('url', event.target.value)}
+              onBlur={handleUrlBlur}
               placeholder="https://tu-sitio.com"
+              aria-describedby="url-help"
             />
             {renderCharacterHint('url')}
+            <small id="url-help" className="helper-text">
+              Si escribes `midominio.com`, la app completara `https://` automaticamente.
+            </small>
           </label>
         );
       case 'text':
@@ -571,8 +859,12 @@ function App() {
                 value={form.wifiSsid}
                 onChange={(event) => updateForm('wifiSsid', event.target.value)}
                 placeholder="MiRedWiFi"
+                aria-describedby="wifi-help"
               />
               {renderCharacterHint('wifiSsid')}
+              <small id="wifi-help" className="helper-text">
+                Ejemplo: `Cafe Central WiFi` o `Oficina Piso 2`.
+              </small>
             </label>
             <div className="grid">
               <label className="field">
@@ -588,6 +880,9 @@ function App() {
                   disabled={form.wifiSecurity === 'nopass'}
                 />
                 {renderCharacterHint('wifiPassword')}
+                <small className="helper-text">
+                  Ejemplo: `Clave2026!` o dejala vacia si la red no usa clave.
+                </small>
               </label>
               <label className="field">
                 <span>Seguridad</span>
@@ -723,6 +1018,11 @@ function App() {
           contactos. Ajusta el contenido, personaliza su apariencia y descarga
           el resultado en PNG o SVG.
         </p>
+        <p className="sr-only" aria-live="polite">
+          {hasPreview
+            ? 'QR generado y listo para descargar.'
+            : errorMessage || 'Esperando contenido para generar un QR.'}
+        </p>
       </section>
 
       <section className="workspace">
@@ -736,6 +1036,7 @@ function App() {
                   type="button"
                   className={option.id === qrType ? 'type-card active' : 'type-card'}
                   onClick={() => setQrType(option.id)}
+                  aria-pressed={option.id === qrType}
                 >
                   <strong>{option.title}</strong>
                   <small>{option.description}</small>
@@ -744,9 +1045,28 @@ function App() {
             </div>
           </div>
 
+          <div className="mode-bar">
+            <div className="mode-copy">
+              <strong>Modo principiante</strong>
+              <p>Empieza con lo esencial y abre mas opciones solo cuando las necesites.</p>
+            </div>
+            <button
+              type="button"
+              className={showAdvanced ? 'toggle-button active' : 'toggle-button'}
+              onClick={() => setShowAdvanced((current) => !current)}
+              aria-expanded={showAdvanced}
+              aria-controls="advanced-options"
+            >
+              {showAdvanced ? 'Ocultar opciones' : 'Mas opciones'}
+            </button>
+          </div>
+
           {renderForm()}
 
-          <div className="settings-panel">
+          <div
+            id="advanced-options"
+            className={showAdvanced ? 'settings-panel is-open' : 'settings-panel'}
+          >
             <div className="settings-card">
               <div className="settings-card-header">
                 <div>
@@ -881,6 +1201,60 @@ function App() {
                 </label>
               </div>
 
+              <div className="template-card">
+                <div className="template-card-header">
+                  <div>
+                    <h4>Plantillas accesibles</h4>
+                    <p>Combinaciones preconfiguradas con buen contraste para lectura.</p>
+                  </div>
+                </div>
+                <div className="template-grid">
+                  {accessibilityTemplates.map((template) => (
+                    <button
+                      key={template.id}
+                      type="button"
+                      className="template-button"
+                      onClick={() =>
+                        applyAccessibilityTemplate(template.dark, template.light)
+                      }
+                    >
+                      <span className="template-swatches">
+                        <span
+                          className="template-chip"
+                          style={{ backgroundColor: template.dark }}
+                        />
+                        <span
+                          className="template-chip"
+                          style={{ backgroundColor: template.light }}
+                        />
+                      </span>
+                      <strong>{template.name}</strong>
+                      <small>{template.description}</small>
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <div className={`accessibility-card ${accessibilityLevel.tone}`}>
+                <div className="accessibility-head">
+                  <div>
+                    <h4>Lectura y accesibilidad</h4>
+                    <p>{accessibilityLevel.helper}</p>
+                  </div>
+                  <span className="accessibility-badge">{accessibilityLevel.label}</span>
+                </div>
+                <div className="accessibility-meter">
+                  <div
+                    className="accessibility-meter-fill"
+                    style={{ width: `${Math.min((contrastRatio / 7) * 100, 100)}%` }}
+                  />
+                </div>
+                <div className="accessibility-meta">
+                  <span>Contraste</span>
+                  <strong>{contrastRatio.toFixed(2)} : 1</strong>
+                </div>
+              </div>
+
               <label className="field">
                 <div className="field-title">
                   <span>Correccion de error</span>
@@ -913,26 +1287,9 @@ function App() {
                 </select>
               </label>
             </div>
+
           </div>
 
-          <div className="actions">
-            <button
-              type="button"
-              className="primary-button"
-              onClick={downloadPng}
-              disabled={!pngUrl}
-            >
-              Descargar PNG
-            </button>
-            <button
-              type="button"
-              className="secondary-button"
-              onClick={downloadSvg}
-              disabled={!svgMarkup}
-            >
-              Descargar SVG
-            </button>
-          </div>
         </div>
 
         <div className="panel preview-panel">
@@ -965,15 +1322,86 @@ function App() {
           </div>
 
           {hasPreview ? (
-            <div className="preview-note">
+            <div className="preview-note" role="status" aria-live="polite">
               <span className="preview-note-dot" />
               <p>QR generado y listo para descargar.</p>
             </div>
           ) : null}
 
+          <div className="actions preview-actions">
+            <button
+              type="button"
+              className="primary-button"
+              onClick={downloadPng}
+              disabled={!pngUrl}
+            >
+              Descargar PNG
+            </button>
+            <button
+              type="button"
+              className="secondary-button"
+              onClick={downloadSvg}
+              disabled={!svgMarkup}
+            >
+              Descargar SVG
+            </button>
+          </div>
+
           <div className="payload-card">
             <strong>Contenido generado</strong>
             <code>{qrValue || 'Esperando contenido para generar el QR.'}</code>
+          </div>
+
+          <div className="history-card preview-history">
+            <div className="history-header">
+              <div>
+                <h3>Historial local</h3>
+                <p>Guarda tus ultimos QRs en este dispositivo para reutilizarlos despues.</p>
+              </div>
+              <label className="switch">
+                <input
+                  type="checkbox"
+                  checked={historyEnabled}
+                  onChange={(event) => setHistoryEnabled(event.target.checked)}
+                />
+                <span className="switch-track" />
+                <span className="sr-only">Activar historial local</span>
+              </label>
+            </div>
+
+            {historyEnabled ? (
+              historyEntries.length ? (
+                <>
+                  <div className="history-list">
+                    {historyEntries.map((entry) => (
+                      <button
+                        key={entry.id}
+                        type="button"
+                        className="history-item"
+                        onClick={() => applyHistoryEntry(entry)}
+                      >
+                        <strong>{entry.label}</strong>
+                        <span>{entry.qrType.toUpperCase()}</span>
+                        <small>{formatHistoryTimestamp(entry.createdAt)}</small>
+                      </button>
+                    ))}
+                  </div>
+                  <button
+                    type="button"
+                    className="text-button"
+                    onClick={clearHistory}
+                  >
+                    Borrar historial
+                  </button>
+                </>
+              ) : (
+                <p className="history-empty">Todavia no hay elementos guardados.</p>
+              )
+            ) : (
+              <p className="history-empty">
+                El historial esta apagado. Activalo solo si este dispositivo es privado.
+              </p>
+            )}
           </div>
 
           <div className="tips">
