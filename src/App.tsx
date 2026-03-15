@@ -41,24 +41,24 @@ const qrTypeOptions: Array<{ id: QrType; title: string; description: string }> =
 ];
 
 const fieldLimits: Record<StringFormKey, number> = {
-  url: 2048,
-  text: 1200,
+  url: 1024,
+  text: 500,
   email: 254,
-  emailSubject: 180,
-  emailBody: 600,
+  emailSubject: 100,
+  emailBody: 280,
   phone: 24,
   smsPhone: 24,
-  smsMessage: 320,
-  wifiSsid: 64,
+  smsMessage: 160,
+  wifiSsid: 32,
   wifiPassword: 63,
   wifiSecurity: 10,
-  vcardFirstName: 80,
-  vcardLastName: 80,
-  vcardOrg: 120,
-  vcardTitle: 120,
+  vcardFirstName: 40,
+  vcardLastName: 40,
+  vcardOrg: 80,
+  vcardTitle: 60,
   vcardPhone: 24,
   vcardEmail: 254,
-  vcardWebsite: 2048,
+  vcardWebsite: 512,
 };
 
 const multilineFields: StringFormKey[] = ['text', 'emailBody', 'smsMessage'];
@@ -122,6 +122,20 @@ function isValidEmail(value: string) {
 
 function isValidPhone(value: string) {
   return /^\+?[0-9 ()-]{7,24}$/.test(value);
+}
+
+function isValidHexColor(value: string) {
+  return /^#[0-9A-Fa-f]{6}$/.test(value);
+}
+
+function normalizeHexColor(value: string) {
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return '';
+  }
+
+  const withHash = trimmed.startsWith('#') ? trimmed : `#${trimmed}`;
+  return withHash.slice(0, 7).toUpperCase();
 }
 
 function buildQrValue(type: QrType, form: FormState) {
@@ -271,6 +285,8 @@ function App() {
   const [margin, setMargin] = useState(2);
   const [darkColor, setDarkColor] = useState('#111827');
   const [lightColor, setLightColor] = useState('#ffffff');
+  const [darkHexInput, setDarkHexInput] = useState('#111827');
+  const [lightHexInput, setLightHexInput] = useState('#FFFFFF');
   const [errorCorrectionLevel, setErrorCorrectionLevel] =
     useState<ErrorLevel>('M');
   const [svgMarkup, setSvgMarkup] = useState('');
@@ -280,6 +296,7 @@ function App() {
 
   const qrValue = buildQrValue(qrType, form);
   const validationMessage = getValidationMessage(qrType, form);
+  const hasPreview = Boolean(svgMarkup) && !errorMessage;
 
   useEffect(() => {
     let isActive = true;
@@ -396,6 +413,36 @@ function App() {
         {form[key].length}/{fieldLimits[key]} caracteres
       </small>
     );
+  }
+
+  function updateColor(type: 'dark' | 'light', value: string) {
+    const normalized = normalizeHexColor(value);
+
+    if (type === 'dark') {
+      setDarkHexInput(normalized || value.toUpperCase());
+      if (isValidHexColor(normalized)) {
+        setDarkColor(normalized);
+      }
+      return;
+    }
+
+    setLightHexInput(normalized || value.toUpperCase());
+    if (isValidHexColor(normalized)) {
+      setLightColor(normalized);
+    }
+  }
+
+  function syncColorFromPicker(type: 'dark' | 'light', value: string) {
+    const normalized = value.toUpperCase();
+
+    if (type === 'dark') {
+      setDarkColor(normalized);
+      setDarkHexInput(normalized);
+      return;
+    }
+
+    setLightColor(normalized);
+    setLightHexInput(normalized);
   }
 
   function renderForm() {
@@ -670,12 +717,11 @@ function App() {
   return (
     <main className="page-shell">
       <section className="hero">
-        <p className="eyebrow">Paso 3</p>
-        <h1>Generador QR con validacion y limites seguros</h1>
+        <h1>Generador de QR</h1>
         <p className="hero-copy">
-          Antes de publicar, reforzamos la app con validaciones utiles, control
-          de longitud por campo y errores claros para que el QR no se genere con
-          datos mal formados.
+          Crea codigos QR para enlaces, texto, email, telefono, Wi-Fi y
+          contactos. Ajusta el contenido, personaliza su apariencia y descarga
+          el resultado en PNG o SVG.
         </p>
       </section>
 
@@ -700,77 +746,173 @@ function App() {
 
           {renderForm()}
 
-          <div className="validation-card">
-            <strong>Reglas de seguridad activas</strong>
-            <p>
-              La app limita caracteres por campo, limpia caracteres de control y
-              valida URL, email y telefonos antes de generar el QR.
-            </p>
-          </div>
-
           <div className="settings-panel">
-            <div className="grid">
-              <label className="field">
-                <span>Tamano</span>
-                <input
-                  type="range"
-                  min="160"
-                  max="640"
-                  step="16"
-                  value={size}
-                  onChange={(event) => setSize(Number(event.target.value))}
-                />
-                <small>{size}px</small>
-              </label>
+            <div className="settings-card">
+              <div className="settings-card-header">
+                <div>
+                  <h3>Ajustes visuales</h3>
+                  <p>Personaliza el aspecto del QR antes de descargarlo.</p>
+                </div>
+              </div>
+
+              <div className="settings-grid">
+                <label className="setting-control">
+                  <div className="setting-head">
+                    <span>Tamano</span>
+                    <strong>{size}px</strong>
+                  </div>
+                  <input
+                    type="range"
+                    min="160"
+                    max="640"
+                    step="16"
+                    value={size}
+                    onChange={(event) => setSize(Number(event.target.value))}
+                  />
+                </label>
+
+                <label className="setting-control">
+                  <div className="setting-head">
+                    <span>Margen</span>
+                    <strong>{margin}</strong>
+                  </div>
+                  <input
+                    type="range"
+                    min="0"
+                    max="8"
+                    step="1"
+                    value={margin}
+                    onChange={(event) => setMargin(Number(event.target.value))}
+                  />
+                </label>
+              </div>
+
+              <div className="color-grid">
+                <label className="color-card">
+                  <div className="color-card-top">
+                    <span>Color QR</span>
+                    <strong>{darkColor.toUpperCase()}</strong>
+                  </div>
+                  <div className="color-card-bottom">
+                    <span
+                      className="color-swatch"
+                      style={{ backgroundColor: darkColor }}
+                    />
+                    <input
+                      type="color"
+                      value={darkColor}
+                      onChange={(event) =>
+                        syncColorFromPicker('dark', event.target.value)
+                      }
+                    />
+                  </div>
+                  <div className="color-hex-row">
+                    <span>HEX</span>
+                    <input
+                      type="text"
+                      inputMode="text"
+                      className="hex-input"
+                      maxLength={7}
+                      value={darkHexInput}
+                      onChange={(event) =>
+                        updateColor('dark', event.target.value)
+                      }
+                      placeholder="#111827"
+                    />
+                  </div>
+                  <div className="preset-colors">
+                    {['#111827', '#0F766E', '#7C2D12', '#312E81'].map((preset) => (
+                      <button
+                        key={preset}
+                        type="button"
+                        className="preset-swatch"
+                        style={{ backgroundColor: preset }}
+                        aria-label={`Usar color ${preset}`}
+                        onClick={() => syncColorFromPicker('dark', preset)}
+                      />
+                    ))}
+                  </div>
+                </label>
+
+                <label className="color-card">
+                  <div className="color-card-top">
+                    <span>Fondo</span>
+                    <strong>{lightColor.toUpperCase()}</strong>
+                  </div>
+                  <div className="color-card-bottom">
+                    <span
+                      className="color-swatch"
+                      style={{ backgroundColor: lightColor }}
+                    />
+                    <input
+                      type="color"
+                      value={lightColor}
+                      onChange={(event) =>
+                        syncColorFromPicker('light', event.target.value)
+                      }
+                    />
+                  </div>
+                  <div className="color-hex-row">
+                    <span>HEX</span>
+                    <input
+                      type="text"
+                      inputMode="text"
+                      className="hex-input"
+                      maxLength={7}
+                      value={lightHexInput}
+                      onChange={(event) =>
+                        updateColor('light', event.target.value)
+                      }
+                      placeholder="#FFFFFF"
+                    />
+                  </div>
+                  <div className="preset-colors">
+                    {['#FFFFFF', '#F8FAFC', '#FEF3C7', '#E0F2FE'].map((preset) => (
+                      <button
+                        key={preset}
+                        type="button"
+                        className="preset-swatch"
+                        style={{ backgroundColor: preset }}
+                        aria-label={`Usar color ${preset}`}
+                        onClick={() => syncColorFromPicker('light', preset)}
+                      />
+                    ))}
+                  </div>
+                </label>
+              </div>
 
               <label className="field">
-                <span>Margen</span>
-                <input
-                  type="range"
-                  min="0"
-                  max="8"
-                  step="1"
-                  value={margin}
-                  onChange={(event) => setMargin(Number(event.target.value))}
-                />
-                <small>{margin}</small>
+                <div className="field-title">
+                  <span>Correccion de error</span>
+                  <span className="help-wrap">
+                    <button
+                      type="button"
+                      className="help-trigger"
+                      aria-label="Explicacion sobre correccion de error"
+                    >
+                      ?
+                    </button>
+                    <span className="help-popover">
+                      Define cuanta tolerancia tendra el QR si se imprime con
+                      manchas, pliegues o pequenas obstrucciones. M es una buena
+                      opcion general. H resiste mas, pero hace el QR un poco mas
+                      denso.
+                    </span>
+                  </span>
+                </div>
+                <select
+                  value={errorCorrectionLevel}
+                  onChange={(event) =>
+                    setErrorCorrectionLevel(event.target.value as ErrorLevel)
+                  }
+                >
+                  <option value="L">L - menor densidad</option>
+                  <option value="M">M - balanceado</option>
+                  <option value="Q">Q - resistente</option>
+                  <option value="H">H - maximo soporte</option>
+                </select>
               </label>
             </div>
-
-            <div className="grid">
-              <label className="field">
-                <span>Color QR</span>
-                <input
-                  type="color"
-                  value={darkColor}
-                  onChange={(event) => setDarkColor(event.target.value)}
-                />
-              </label>
-
-              <label className="field">
-                <span>Fondo</span>
-                <input
-                  type="color"
-                  value={lightColor}
-                  onChange={(event) => setLightColor(event.target.value)}
-                />
-              </label>
-            </div>
-
-            <label className="field">
-              <span>Correccion de error</span>
-              <select
-                value={errorCorrectionLevel}
-                onChange={(event) =>
-                  setErrorCorrectionLevel(event.target.value as ErrorLevel)
-                }
-              >
-                <option value="L">L - menor densidad</option>
-                <option value="M">M - balanceado</option>
-                <option value="Q">Q - resistente</option>
-                <option value="H">H - maximo soporte</option>
-              </select>
-            </label>
           </div>
 
           <div className="actions">
@@ -798,14 +940,18 @@ function App() {
             <div>
               <h2>Vista previa</h2>
               <p className="preview-subtitle">
-                El QR se actualiza solo cuando los datos pasan la validacion.
+                La vista previa aparece en cuanto el contenido este listo para generar.
               </p>
             </div>
-            <span>{isGenerating ? 'Generando...' : 'Lista para descargar'}</span>
           </div>
 
           <div className="preview-canvas">
-            {errorMessage ? (
+            {!qrValue ? (
+              <div className="empty-card">
+                <strong>Esperando contenido</strong>
+                <p>Completa los campos para generar tu codigo QR.</p>
+              </div>
+            ) : errorMessage ? (
               <div className="error-card">
                 <strong>No se pudo generar el QR</strong>
                 <p>{errorMessage}</p>
@@ -818,15 +964,22 @@ function App() {
             )}
           </div>
 
+          {hasPreview ? (
+            <div className="preview-note">
+              <span className="preview-note-dot" />
+              <p>QR generado y listo para descargar.</p>
+            </div>
+          ) : null}
+
           <div className="payload-card">
             <strong>Contenido generado</strong>
-            <code>{qrValue || 'Completa los campos para generar el contenido.'}</code>
+            <code>{qrValue || 'Esperando contenido para generar el QR.'}</code>
           </div>
 
           <div className="tips">
-            <p>Los campos invalidos bloquean la generacion hasta corregirse.</p>
-            <p>Los limites ayudan a evitar entradas excesivas y errores raros.</p>
-            <p>El siguiente paso sera preparar la publicacion segura.</p>
+            <p>Usa PNG para compartir rapido en web y mensajeria.</p>
+            <p>Usa SVG para imprimir o escalar el QR sin perder calidad.</p>
+            <p>Ajusta colores, tamano y margen para personalizar el resultado.</p>
           </div>
         </div>
       </section>
